@@ -1,17 +1,18 @@
 import streamlit as st
 
-# ================= 0. 页面配置 =================
+# ================= 0. 页面配置（必须是第一个 st 命令）=================
 st.set_page_config(page_title="Hardcore English Coach", layout="wide")
 
 import sqlite3
 import json
 import os
+import uuid  # 用于生成稳定的会话 ID
 from datetime import datetime
 from openai import OpenAI
 
-# ================= 数据库工具函数 (新增：解决并发锁定) =================
+# ================= 数据库工具函数（解决并发锁定 & 线程安全）=================
 def run_query(db_file, query, params=(), fetch=False, commit=False):
-    """通用的数据库执行函数，确保线程安全"""
+    """通用的数据库执行函数，确保每次操作都独立开关连接"""
     with sqlite3.connect(db_file, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute(query, params)
@@ -21,7 +22,7 @@ def run_query(db_file, query, params=(), fetch=False, commit=False):
             return c.fetchall()
         return None
 
-# ================= 日志表初始化 =================
+# ================= 日志与访客系统（修复了 AttributeError 报错）=================
 def init_visit_log():
     run_query('visit_log.db', '''
     CREATE TABLE IF NOT EXISTS visit_log (
@@ -32,10 +33,17 @@ def init_visit_log():
 init_visit_log()
 
 def log_visit(user_type):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ip = st.runtime.media_file_storage.get_session_id()
-    run_query('visit_log.db', "INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
-              (now, user_type, ip), commit=True)
+    try:
+        # 使用 uuid 替代已失效的官方接口
+        if "user_uuid" not in st.session_state:
+            st.session_state.user_uuid = str(uuid.uuid4())[:8]
+            
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        session_id = st.session_state.user_uuid
+        run_query('visit_log.db', "INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
+                  (now, user_type, session_id), commit=True)
+    except:
+        pass
 
 def show_visit_log():
     st.subheader("👀 访客登录记录（仅管理员可见）")
@@ -46,10 +54,10 @@ def show_visit_log():
     else:
         st.info("暂无访客记录")
 
-# ================= 0.5 验证系统 =================
+# ================= 0.5 验证系统（解决了 iPad 中文输入问题）=================
 with st.sidebar:
     st.header("🔒 专属验证")
-    show_pwd = st.checkbox("显示暗号（输入中文请勾选）")
+    show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
     pwd_type = "default" if show_pwd else "password"
     pwd = st.text_input("🔑 请输入暗号：", type=pwd_type)
 
@@ -70,12 +78,14 @@ elif pwd != "":
 else:
     st.title("🔒 零容忍英语训练营 (已锁定)")
     st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
+    # 锁定状态下也强制隐藏官方元素
     st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
     st.stop()
 
-# ================= 1. 注入 CSS =================
+# ================= 1. 注入 CSS（强力隐藏所有官方 UI 元素）=================
 st.markdown("""
 <style>
+    /* 彻底隐藏顶部、底部和菜单 */
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     .stAppToolbar { display: none !important; }
@@ -83,6 +93,7 @@ st.markdown("""
     footer { visibility: hidden !important; }
     .stDeployButton { display:none !important; }
 
+    /* 游戏化组件样式 */
     section[data-testid="stSidebar"] button[kind="secondary"] { font-size: 0.75em !important; }
     .xp-bar-bg { background: #2c2c2c; border-radius: 10px; height: 22px; width: 100%; position: relative; overflow: hidden; }
     .xp-bar-fill { height: 100%; border-radius: 10px; background: linear-gradient(90deg, #f39c12, #e74c3c, #e91e63); transition: width 0.5s ease; }
@@ -100,7 +111,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 2. 数据库配置初始化 =================
+# ================= 2. 数据库初始化 =================
 def init_db(database_file):
     with sqlite3.connect(database_file) as conn:
         c = conn.cursor()
@@ -133,7 +144,7 @@ def init_db(database_file):
 
 init_db(db_name)
 
-# ================= 3. 游戏化系统逻辑 (已修正) =================
+# ================= 3. 游戏化逻辑 =================
 def get_stats():
     res = run_query(db_name, "SELECT xp, level, streak, last_active, total_messages, perfect_messages, total_sessions FROM user_stats WHERE id = 1", fetch=True)
     row = res[0]
@@ -177,15 +188,12 @@ def check_achievements(level, streak, total_msg, perfect_msg, sessions, is_roast
     if level >= 10: unlocks.append("level_10")
     if level >= 25: unlocks.append("level_25")
     if sessions >= 10: unlocks.append("sessions_10")
-    
     vc_res = run_query(db_name, "SELECT COUNT(*) FROM vocab", fetch=True)
     if vc_res[0][0] >= 10: unlocks.append("vocab_10")
     if vc_res[0][0] >= 50: unlocks.append("vocab_50")
-    
     rm = st.session_state.get("roast_msg_count", 0) + (1 if is_roast else 0)
     if is_roast: st.session_state["roast_msg_count"] = rm
     if rm >= 10: unlocks.append("roast_survivor")
-    
     today = datetime.today().date().isoformat()
     for aid in unlocks:
         run_query(db_name, "UPDATE achievements SET unlocked=1, unlock_date=? WHERE id=? AND unlocked=0", (today, aid), commit=True)
@@ -194,21 +202,21 @@ def render_stats_bar():
     stats = get_stats()
     xp_needed = 80 + (stats["level"] - 1) * 30
     pct = min(stats["xp"] / xp_needed * 100, 100)
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
         titles = {1: "Newbie", 5: "Rising Star", 10: "Veteran", 20: "Master", 25: "Legend"}
         title = next((t for lv, t in sorted(titles.items(), reverse=True) if stats["level"] >= lv), "Newbie")
         st.markdown(f"### Lv.{stats['level']} — {title}")
-    with col2:
+    with c2:
         fire = "🔥" * min(stats["streak"], 5)
         st.markdown(f"<span class='streak-fire'>{fire if fire else '❄️'}</span> **{stats['streak']}天连续**", unsafe_allow_html=True)
-    with col3:
+    with c3:
         acc = (stats["perfect_messages"] / stats["total_messages"] * 100) if stats["total_messages"] > 0 else 0
         st.markdown(f"🎯 **正确率 {acc:.0f}%**")
     st.markdown(f'<div class="xp-bar-bg"><div class="xp-bar-fill" style="width: {pct}%;"></div><div class="xp-bar-text">{stats["xp"]} / {xp_needed} XP</div></div>', unsafe_allow_html=True)
     st.write("")
 
-# ================= 4. API & AI 性格 (已修正 Hype 模式) =================
+# ================= 4. AI & 性格配置（已修正 Hype 模式大小写）=================
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
@@ -279,19 +287,19 @@ with t1:
 with t3:
     st.subheader("Knowledge Base")
     recs = run_query(db_name, "SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC", fetch=True)
-    for r in recs:
-        with st.expander(f"📅 {r[1]} | {r[2]}"):
-            st.markdown(f"❌ {r[3]}\n\n✅ {r[4]}")
-            if st.button("🗑️", key=f"del_m_{r[0]}"):
-                run_query(db_name, "DELETE FROM mistakes WHERE id=?", (r[0],), commit=True); st.rerun()
+    if recs:
+        for r in recs:
+            with st.expander(f"📅 {r[1]} | {r[2]}"):
+                st.markdown(f"❌ {r[3]}\n\n✅ {r[4]}")
+                if st.button("🗑️", key=f"del_m_{r[0]}"):
+                    run_query(db_name, "DELETE FROM mistakes WHERE id=?", (r[0],), commit=True); st.rerun()
+    else: st.info("No records yet.")
 
-# 侧边栏生词本也已改为安全模式
-with st.sidebar:
-    st.divider(); st.subheader("Vocab Book")
-    nw = st.text_input("Quick search:")
-    if st.button("Search & Save"):
-        if nw:
-            res = run_query(db_name, "SELECT word FROM vocab WHERE word=?", (nw,), fetch=True)
-            if not res:
-                run_query(db_name, "INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, "Def", "中"), commit=True)
-                st.success("Saved!")
+with t5:
+    st.subheader("Achievements")
+    achs = run_query(db_name, "SELECT name, description, icon, tier, unlocked FROM achievements ORDER BY unlocked DESC", fetch=True)
+    html = ""
+    for name, desc, icon, tier, unl in achs:
+        t_cls = f"badge-{tier}" if unl else "badge-locked"
+        html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
+    st.markdown(html, unsafe_allow_html=True)
