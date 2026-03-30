@@ -120,6 +120,10 @@ st.markdown("""
     .mode-roast { background: #e74c3c; color: white; }
     .mode-hype { background: #2ecc71; color: white; }
     .mode-normal { background: #3498db; color: white; }
+
+    /* 👇 只加了这4行，隐藏底部，其他完全不动 */
+    footer { visibility: hidden; }
+    .stDeployButton { display:none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -535,7 +539,7 @@ with tab1:
 
         if user_input := st.chat_input("Type your response in English..."):
             st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.chat_message("user"):
+            with st.chat_message(user):
                 st.markdown(user_input)
             with st.spinner("Thinking..."):
                 result = chat_and_correct_agent(
