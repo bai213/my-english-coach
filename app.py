@@ -6,8 +6,56 @@ st.set_page_config(page_title="Hardcore English Coach", layout="wide")
 import sqlite3
 import json
 import os
-from datetime import date
+from datetime import datetime
 from openai import OpenAI
+
+# ================= 日志表初始化 =================
+def init_visit_log():
+    conn = sqlite3.connect('visit_log.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS visit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        login_time TEXT,
+        user_type TEXT,
+        ip TEXT
+    )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_visit_log()
+
+# 记录访客
+def log_visit(user_type):
+    try:
+        conn = sqlite3.connect('visit_log.db', check_same_thread=False)
+        c = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ip = st.runtime.media_file_storage.get_session_id()  # 简易标识，不暴露真实隐私
+        c.execute("INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
+                  (now, user_type, ip))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+# 管理员查看日志
+def show_visit_log():
+    st.subheader("👀 访客登录记录（仅管理员可见）")
+    try:
+        conn = sqlite3.connect('visit_log.db', check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT login_time, user_type, ip FROM visit_log ORDER BY id DESC LIMIT 50")
+        logs = c.fetchall()
+        conn.close()
+        if logs:
+            for t, ut, ip in logs:
+                st.markdown(f"**{t}** | {ut} | 会话：{ip[:12]}...")
+        else:
+            st.info("暂无访客记录")
+    except:
+        st.error("读取日志失败")
 
 # ================= 0.5 终极防盗门：平行宇宙双账号系统 =================
 with st.sidebar:
@@ -20,9 +68,11 @@ GUEST_PWD = st.secrets["GUEST_PWD"]
 
 if pwd == ADMIN_PWD:
     db_name = "notebook.db"
+    log_visit("ADMIN")
     st.sidebar.success("👑 欢迎回来，主人！已加载您的专属数据。")
 elif pwd == GUEST_PWD:
-    db_name = "guest.db" # 这是一个完全独立的数据库文件！
+    db_name = "guest.db"
+    log_visit("GUEST")
     st.sidebar.info("👋 欢迎体验！你目前处于【访客模式】，数据独立存储，尽情受虐吧。")
 elif pwd != "":
     st.sidebar.warning("✋ 停！暗号不对。")
@@ -60,7 +110,7 @@ st.markdown("""
     }
     .badge-gold { background: linear-gradient(135deg, #f7dc6f, #f0b027); color: #333; }
     .badge-silver { background: linear-gradient(135deg, #d5d8dc, #aab7b8); color: #333; }
-    .badge-bronze { background: linear-gradient(135deg, #e8c4a0, #cd9b6e); color: #333; }
+    .badge-bronze { background: linear-gradient(135deg, #e8c40a, #cd9b6e); color: #333; }
     .badge-locked { background: #3a3a3a; color: #777; }
     .streak-fire { font-size: 1.4em; }
     .mode-tag {
@@ -146,13 +196,18 @@ def add_xp(amount, perfect=False, is_roast=False):
     while xp >= xp_for_level(level):
         xp -= xp_for_level(level)
         level += 1
-    today_str = date.today().isoformat()
+    today_str = datetime.today().isoformat()
     last = stats["last_active"]
     streak = stats["streak"]
     if last != today_str:
-        if last and date.fromisoformat(last).toordinal() == date.today().toordinal() - 1:
-            streak += 1
-        else:
+        try:
+            from datetime import date
+            last_date = date.fromisoformat(last)
+            if last_date.toordinal() == date.today().toordinal() - 1:
+                streak += 1
+            else:
+                streak = 1
+        except:
             streak = 1
     c.execute("UPDATE user_stats SET xp=?, level=?, streak=?, last_active=?, total_messages=?, perfect_messages=? WHERE id=1",
               (xp, level, streak, today_str, total_msg, perfect_msg))
@@ -189,7 +244,7 @@ def check_achievements(level, streak, total_msg, perfect_msg, sessions, is_roast
         roast_msgs += 1
         st.session_state["roast_msg_count"] = roast_msgs
     if roast_msgs >= 10: unlocks.append("roast_survivor")
-    today_str = date.today().isoformat()
+    today_str = datetime.today().isoformat()
     for aid in unlocks:
         c.execute("UPDATE achievements SET unlocked=1, unlock_date=? WHERE id=? AND unlocked=0", (today_str, aid))
     conn.commit()
@@ -375,7 +430,7 @@ SCENARIOS = {
 
 # ================= 7. 侧边栏 =================
 with st.sidebar:
-    st.divider() # 加条分割线，和上面的密码区分开
+    st.divider()
     st.header("🔤 Quick Vocab Book")
     st.write("单词或长句不懂？直接丢进来查。")
     new_word = st.text_input("Type a word or phrase:")
@@ -415,6 +470,11 @@ with st.sidebar:
 
 # ================= 8. 主界面 =================
 render_stats_bar()
+
+# 管理员显示访客日志
+if pwd == ADMIN_PWD:
+    show_visit_log()
+    st.divider()
 
 st.title("🔥 Zero Tolerance English Bootcamp")
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
