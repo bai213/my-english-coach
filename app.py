@@ -10,9 +10,9 @@ import uuid  # 用于生成稳定的会话 ID
 from datetime import datetime
 from openai import OpenAI
 
-# ================= 数据库工具函数（解决并发锁定 & 线程安全）=================
+# ================= 1. 数据库工具函数（解决并发锁定 & 线程安全）=================
 def run_query(db_file, query, params=(), fetch=False, commit=False):
-    """通用的数据库执行函数，确保每次操作都独立开关连接"""
+    """通用的数据库执行函数，确保每次操作都独立开关连接，防止 database is locked"""
     with sqlite3.connect(db_file, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute(query, params)
@@ -22,7 +22,7 @@ def run_query(db_file, query, params=(), fetch=False, commit=False):
             return c.fetchall()
         return None
 
-# ================= 日志与访客系统（修复了 AttributeError 报错）=================
+# ================= 2. 日志与访客系统（使用 UUID 修复报错）=================
 def init_visit_log():
     run_query('visit_log.db', '''
     CREATE TABLE IF NOT EXISTS visit_log (
@@ -34,10 +34,8 @@ init_visit_log()
 
 def log_visit(user_type):
     try:
-        # 使用 uuid 替代已失效的官方接口
         if "user_uuid" not in st.session_state:
             st.session_state.user_uuid = str(uuid.uuid4())[:8]
-            
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session_id = st.session_state.user_uuid
         run_query('visit_log.db', "INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
@@ -54,13 +52,14 @@ def show_visit_log():
     else:
         st.info("暂无访客记录")
 
-# ================= 0.5 验证系统（解决了 iPad 中文输入问题）=================
+# ================= 3. 验证系统（iPad 中文输入优化）=================
 with st.sidebar:
     st.header("🔒 专属验证")
     show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
     pwd_type = "default" if show_pwd else "password"
     pwd = st.text_input("🔑 请输入暗号：", type=pwd_type)
 
+# 从 Streamlit Secrets 安全读取密码
 ADMIN_PWD = st.secrets["ADMIN_PWD"]
 GUEST_PWD = st.secrets["GUEST_PWD"]
 
@@ -78,14 +77,12 @@ elif pwd != "":
 else:
     st.title("🔒 零容忍英语训练营 (已锁定)")
     st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
-    # 锁定状态下也强制隐藏官方元素
     st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
     st.stop()
 
-# ================= 1. 注入 CSS（强力隐藏所有官方 UI 元素）=================
+# ================= 4. 注入 CSS（强力隐藏所有官方 UI 元素）=================
 st.markdown("""
 <style>
-    /* 彻底隐藏顶部、底部和菜单 */
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     .stAppToolbar { display: none !important; }
@@ -93,7 +90,6 @@ st.markdown("""
     footer { visibility: hidden !important; }
     .stDeployButton { display:none !important; }
 
-    /* 游戏化组件样式 */
     section[data-testid="stSidebar"] button[kind="secondary"] { font-size: 0.75em !important; }
     .xp-bar-bg { background: #2c2c2c; border-radius: 10px; height: 22px; width: 100%; position: relative; overflow: hidden; }
     .xp-bar-fill { height: 100%; border-radius: 10px; background: linear-gradient(90deg, #f39c12, #e74c3c, #e91e63); transition: width 0.5s ease; }
@@ -111,7 +107,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 2. 数据库初始化 =================
+# ================= 5. 数据库初始化 =================
 def init_db(database_file):
     with sqlite3.connect(database_file) as conn:
         c = conn.cursor()
@@ -144,7 +140,7 @@ def init_db(database_file):
 
 init_db(db_name)
 
-# ================= 3. 游戏化逻辑 =================
+# ================= 6. 游戏化逻辑 =================
 def get_stats():
     res = run_query(db_name, "SELECT xp, level, streak, last_active, total_messages, perfect_messages, total_sessions FROM user_stats WHERE id = 1", fetch=True)
     row = res[0]
@@ -216,19 +212,19 @@ def render_stats_bar():
     st.markdown(f'<div class="xp-bar-bg"><div class="xp-bar-fill" style="width: {pct}%;"></div><div class="xp-bar-text">{stats["xp"]} / {xp_needed} XP</div></div>', unsafe_allow_html=True)
     st.write("")
 
-# ================= 4. AI & 性格配置（已修正 Hype 模式大小写）=================
+# ================= 7. AI & 查词逻辑（修复了查词消失问题）=================
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
 MODES = {
     "🔥 毒舌模式 (Roast)": {"tag": "mode-roast", "text": "ROAST", "extra": "Sarcastic, savage. Roast mistakes hard."},
-    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Use normal sentence casing (no all-caps), but lots of exclamation marks!"},
+    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Use normal casing (no all-caps), but lots of exclamation marks!"},
     "😎 正常模式 (Normal)": {"tag": "mode-normal", "text": "NORMAL", "extra": "Friendly, natural conversation partner."}
 }
 
 def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 正常模式 (Normal)"):
     mode = MODES.get(personality, MODES["😎 正常模式 (Normal)"])
-    system_prompt = f"English teacher. Scenario: {scenario}. Personality: {mode['extra']}\nTask: 1. Reply in character. 2. Point out errors. Chinese = error. JSON ONLY: {{\"ai_reply\": \"...\", \"errors\": [{{ \"wrong_sentence\": \"...\", \"correction\": \"...\", \"explanation_en\": \"...\" }}]}}"
+    system_prompt = f"English teacher. Scenario: {scenario}. Personality: {mode['extra']}\nTask: 1. Reply in character. 2. Point out errors. JSON ONLY: {{\"ai_reply\": \"...\", \"errors\": [{{ \"wrong_sentence\": \"...\", \"correction\": \"...\", \"explanation_en\": \"...\" }}]}}"
     messages = [{"role": "system", "content": system_prompt}]
     if history:
         for m in history: messages.append({"role": m["role"], "content": m.get("content", "")})
@@ -238,7 +234,14 @@ def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 
         return json.loads(resp.choices[0].message.content)
     except: return {"ai_reply": "Connection error.", "errors": []}
 
-# ================= 7. 界面渲染 =================
+def get_word_definition(word):
+    prompt = "You are a dictionary. Define the word/phrase, give example, and provide Chinese translation. Output JSON: {\"definition_en\": \"...\", \"example_en\": \"...\", \"translation_zh\": \"...\"}"
+    try:
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "system", "content": prompt}, {"role": "user", "content": word}], response_format={"type": "json_object"})
+        return json.loads(resp.choices[0].message.content)
+    except: return {"definition_en": "Error", "example_en": "", "translation_zh": "查询失败"}
+
+# ================= 8. 主界面 Tab 渲染 =================
 render_stats_bar()
 if pwd == ADMIN_PWD: show_visit_log(); st.divider()
 
@@ -290,7 +293,7 @@ with t3:
     if recs:
         for r in recs:
             with st.expander(f"📅 {r[1]} | {r[2]}"):
-                st.markdown(f"❌ {r[3]}\n\n✅ {r[4]}")
+                st.markdown(f"**❌ You:** {r[3]}\n\n**✅ Native:** {r[4]}")
                 if st.button("🗑️", key=f"del_m_{r[0]}"):
                     run_query(db_name, "DELETE FROM mistakes WHERE id=?", (r[0],), commit=True); st.rerun()
     else: st.info("No records yet.")
@@ -303,3 +306,27 @@ with t5:
         t_cls = f"badge-{tier}" if unl else "badge-locked"
         html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
     st.markdown(html, unsafe_allow_html=True)
+
+# --- Sidebar Vocab（修复了 AI 查词失效问题） ---
+with st.sidebar:
+    st.divider(); st.subheader("Vocab Book")
+    nw = st.text_input("Quick search:")
+    if st.button("Search & Save"):
+        if nw:
+            with st.spinner("Searching AI Dictionary..."):
+                res = get_word_definition(nw)
+                df, ex, tr = res.get("definition_en"), res.get("example_en"), res.get("translation_zh")
+                st.markdown(f"**{nw}**")
+                st.write(df)
+                if ex: st.info(f"Example: {ex}")
+                run_query(db_name, "INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, f"{df}\n\nEx: {ex}", tr), commit=True)
+                st.success("Saved!")
+    
+    st.divider(); st.write("Recent Words:")
+    words = run_query(db_name, "SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 10", fetch=True)
+    if words:
+        for wid, w, d, tr in words:
+            with st.expander(f"📘 {w}"):
+                st.write(d)
+                if st.toggle("Show Chinese", key=f"t_{wid}"): st.info(tr)
+                if st.button("🗑️", key=f"dw_{wid}"): run_query(db_name, "DELETE FROM vocab WHERE id=?", (wid,), commit=True); st.rerun()
