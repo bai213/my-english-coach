@@ -32,7 +32,7 @@ def log_visit(user_type):
         conn = sqlite3.connect('visit_log.db', check_same_thread=False)
         c = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ip = st.runtime.media_file_storage.get_session_id()  # 简易标识，不暴露真实隐私
+        ip = st.runtime.media_file_storage.get_session_id()
         c.execute("INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
                   (now, user_type, ip))
         conn.commit()
@@ -58,11 +58,14 @@ def show_visit_log():
         st.error("读取日志失败")
 
 # ================= 0.5 终极防盗门：平行宇宙双账号系统 =================
+# 特别优化：加入暗号可见性切换，解决 iPad 无法输入中文的问题
 with st.sidebar:
     st.header("🔒 专属验证")
-    pwd = st.text_input("🔑 请输入暗号：", type="password")
+    show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
+    pwd_type = "default" if show_pwd else "password"
+    pwd = st.text_input("🔑 请输入暗号：", type=pwd_type)
 
-# 从 Streamlit Secrets 安全读取密码，代码中不出现真实密码
+# 从 Streamlit Secrets 安全读取密码
 ADMIN_PWD = st.secrets["ADMIN_PWD"]
 GUEST_PWD = st.secrets["GUEST_PWD"]
 
@@ -73,20 +76,21 @@ if pwd == ADMIN_PWD:
 elif pwd == GUEST_PWD:
     db_name = "guest.db"
     log_visit("GUEST")
-    st.sidebar.info("👋 欢迎体验！你目前处于【访客模式】，数据独立存储，尽情受虐吧。")
+    st.sidebar.info("👋 欢迎体验！你目前处于【访客模式】，数据独立存储。")
 elif pwd != "":
     st.sidebar.warning("✋ 停！暗号不对。")
     st.stop()
 else:
     st.title("🔒 零容忍英语训练营 (已锁定)")
     st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
+    # 这里的 CSS 注入是为了在锁定状态下也隐藏官方元素
+    st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
     st.stop()
-# ==============================================================
 
-# ================= 1. 注入 CSS（已根据要求添加强效隐藏规则） =================
+# ================= 1. 注入 CSS（强效隐藏所有官方组件） =================
 st.markdown("""
 <style>
-    /* 👇 强制隐藏 Streamlit 云端外壳元素 */
+    /* 强效隐藏官方外壳 */
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     .stAppToolbar { display: none !important; }
@@ -94,7 +98,7 @@ st.markdown("""
     footer { visibility: hidden !important; }
     .stDeployButton { display:none !important; }
 
-    /* 原有样式保持不动 */
+    /* 侧边栏按钮和游戏化样式 */
     section[data-testid="stSidebar"] button[kind="secondary"] {
         font-size: 0.75em !important;
     }
@@ -160,7 +164,8 @@ def get_db_connection(database_file):
         (id TEXT PRIMARY KEY, name TEXT, description TEXT, icon TEXT,
          tier TEXT, unlocked INTEGER DEFAULT 0, unlock_date TEXT)''')
     c.execute("INSERT OR IGNORE INTO user_stats (id, xp, level, streak, total_messages, perfect_messages, total_sessions) VALUES (1, 0, 1, 0, 0, 0, 0)")
-    achievements_def = [
+    
+    ach_def = [
         ("first_blood", "First Blood", "Send your first message", "⚔️", "bronze"),
         ("chatterbox", "Chatterbox", "Send 50 messages", "💬", "silver"),
         ("marathon", "Marathon", "Send 200 messages", "🏃", "gold"),
@@ -177,12 +182,11 @@ def get_db_connection(database_file):
         ("sessions_10", "Regular", "Complete 10 chat sessions", "🎯", "silver"),
         ("roast_survivor", "Roast Survivor", "Survive 10 msgs in Roast mode", "🌶️", "silver"),
     ]
-    for a in achievements_def:
+    for a in ach_def:
         c.execute("INSERT OR IGNORE INTO achievements (id, name, description, icon, tier) VALUES (?, ?, ?, ?, ?)", a)
     conn.commit()
     return conn
 
-# 这里的 db_name 是根据上面输入的暗号动态决定的！
 conn = get_db_connection(db_name)
 c = conn.cursor()
 
@@ -198,26 +202,18 @@ def xp_for_level(level):
 
 def add_xp(amount, perfect=False, is_roast=False):
     stats = get_stats()
-    xp = stats["xp"] + amount
-    total_msg = stats["total_messages"] + 1
-    perfect_msg = stats["perfect_messages"] + (1 if perfect else 0)
-    level = stats["level"]
+    xp, level, total_msg, perfect_msg = stats["xp"] + amount, stats["level"], stats["total_messages"] + 1, stats["perfect_messages"] + (1 if perfect else 0)
     while xp >= xp_for_level(level):
         xp -= xp_for_level(level)
         level += 1
     today_str = datetime.today().isoformat()
-    last = stats["last_active"]
     streak = stats["streak"]
-    if last != today_str:
+    if stats["last_active"] != today_str:
         try:
             from datetime import date
-            last_date = date.fromisoformat(last)
-            if last_date.toordinal() == date.today().toordinal() - 1:
-                streak += 1
-            else:
-                streak = 1
-        except:
-            streak = 1
+            last_date = date.fromisoformat(stats["last_active"])
+            streak = streak + 1 if last_date.toordinal() == date.today().toordinal() - 1 else 1
+        except: streak = 1
     c.execute("UPDATE user_stats SET xp=?, level=?, streak=?, last_active=?, total_messages=?, perfect_messages=? WHERE id=1",
               (xp, level, streak, today_str, total_msg, perfect_msg))
     conn.commit()
@@ -226,9 +222,8 @@ def add_xp(amount, perfect=False, is_roast=False):
 def increment_sessions():
     c.execute("UPDATE user_stats SET total_sessions = total_sessions + 1 WHERE id = 1")
     conn.commit()
-    stats = get_stats()
-    check_achievements(stats["level"], stats["streak"], stats["total_messages"],
-                       stats["perfect_messages"], stats["total_sessions"], False)
+    s = get_stats()
+    check_achievements(s["level"], s["streak"], s["total_messages"], s["perfect_messages"], s["total_sessions"], False)
 
 def check_achievements(level, streak, total_msg, perfect_msg, sessions, is_roast):
     unlocks = []
@@ -245,439 +240,187 @@ def check_achievements(level, streak, total_msg, perfect_msg, sessions, is_roast
     if level >= 25: unlocks.append("level_25")
     if sessions >= 10: unlocks.append("sessions_10")
     c.execute("SELECT COUNT(*) FROM vocab")
-    vocab_count = c.fetchone()[0]
-    if vocab_count >= 10: unlocks.append("vocab_10")
-    if vocab_count >= 50: unlocks.append("vocab_50")
-    roast_msgs = st.session_state.get("roast_msg_count", 0)
-    if is_roast:
-        roast_msgs += 1
-        st.session_state["roast_msg_count"] = roast_msgs
-    if roast_msgs >= 10: unlocks.append("roast_survivor")
-    today_str = datetime.today().isoformat()
+    vc = c.fetchone()[0]
+    if vc >= 10: unlocks.append("vocab_10")
+    if vc >= 50: unlocks.append("vocab_50")
+    rm = st.session_state.get("roast_msg_count", 0) + (1 if is_roast else 0)
+    if is_roast: st.session_state["roast_msg_count"] = rm
+    if rm >= 10: unlocks.append("roast_survivor")
+    today = datetime.today().isoformat()
     for aid in unlocks:
-        c.execute("UPDATE achievements SET unlocked=1, unlock_date=? WHERE id=? AND unlocked=0", (today_str, aid))
+        c.execute("UPDATE achievements SET unlocked=1, unlock_date=? WHERE id=? AND unlocked=0", (today, aid))
     conn.commit()
 
 def render_stats_bar():
     stats = get_stats()
     xp_needed = xp_for_level(stats["level"])
     pct = min(stats["xp"] / xp_needed * 100, 100)
-    col_lvl, col_streak, col_msg = st.columns([2, 1, 1])
-    with col_lvl:
-        titles = {1: "Newbie", 5: "Rising Star", 10: "Veteran", 15: "Expert", 20: "Master", 25: "Legend", 30: "God Mode"}
-        title = "Newbie"
-        for lv, t in sorted(titles.items(), reverse=True):
-            if stats["level"] >= lv:
-                title = t
-                break
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        titles = {1: "Newbie", 5: "Rising Star", 10: "Veteran", 20: "Master", 25: "Legend"}
+        title = next((t for lv, t in sorted(titles.items(), reverse=True) if stats["level"] >= lv), "Newbie")
         st.markdown(f"### Lv.{stats['level']} — {title}")
-    with col_streak:
+    with col2:
         fire = "🔥" * min(stats["streak"], 5)
         st.markdown(f"<span class='streak-fire'>{fire if fire else '❄️'}</span> **{stats['streak']}天连续**", unsafe_allow_html=True)
-    with col_msg:
-        accuracy = (stats["perfect_messages"] / stats["total_messages"] * 100) if stats["total_messages"] > 0 else 0
-        st.markdown(f"🎯 **正确率 {accuracy:.0f}%**")
-    st.markdown(f"""
-    <div class="xp-bar-bg">
-        <div class="xp-bar-fill" style="width: {pct}%;"></div>
-        <div class="xp-bar-text">{stats['xp']} / {xp_needed} XP</div>
-    </div>""", unsafe_allow_html=True)
+    with col3:
+        acc = (stats["perfect_messages"] / stats["total_messages"] * 100) if stats["total_messages"] > 0 else 0
+        st.markdown(f"🎯 **正确率 {acc:.0f}%**")
+    st.markdown(f'<div class="xp-bar-bg"><div class="xp-bar-fill" style="width: {pct}%;"></div><div class="xp-bar-text">{stats["xp"]} / {xp_needed} XP</div></div>', unsafe_allow_html=True)
     st.write("")
 
-# ================= 4. API 配置 =================
-def get_api_key():
-    try:
-        return st.secrets["DEEPSEEK_API_KEY"]
-    except Exception:
-        return os.environ.get("DEEPSEEK_API_KEY", "")
-
-api_key = get_api_key()
-if not api_key:
-    st.error("⚠️ 未检测到 API Key！请在 `.streamlit/secrets.toml` 中设置 `DEEPSEEK_API_KEY`。")
-    st.code('# .streamlit/secrets.toml\nDEEPSEEK_API_KEY = "sk-your-key-here"', language="toml")
-    st.stop()
-
+# ================= 4. API & Personality =================
+api_key = st.secrets.get("DEEPSEEK_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))
+if not api_key: st.error("⚠️ API Key Error!"); st.stop()
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# ================= 5. AI 性格系统 =================
-PERSONALITY_MODES = {
-    "🔥 毒舌模式 (Roast)": {
-        "tag_class": "mode-roast", "tag_text": "ROAST MODE",
-        "prompt_extra": """
-PERSONALITY: You are BRUTALLY sarcastic and savage. You roast the user's mistakes HARD with dark humor.
-Your replies drip with sarcasm. If they make no errors, act DISAPPOINTED you can't roast them.
-Use phrases like "Oh honey...", "Bless your heart...", "Are you even trying?", "My 5-year-old writes better..."
-BUT: Still be HELPFUL underneath. Always provide the correct answer. Funny, not cruel. Think Gordon Ramsay teaching English."""
-    },
-    "🌈 夸夸模式 (Hype)": {
-        "tag_class": "mode-hype", "tag_text": "HYPE MODE",
-        "prompt_extra": """
-PERSONALITY: You are the world's most ENTHUSIASTIC cheerleader. Celebrate EVERYTHING.
-Even tiny things deserve fireworks. "OH MY GOD you used a SEMICOLON?! INCREDIBLE!"
-If they make errors, frame it as "you're SO CLOSE, just tweak this tiny thing!"
-Use ALL CAPS frequently. Every message should make the user feel like a SUPERSTAR.
-Think: motivational speaker who had 5 espressos."""
-    },
-    "😎 正常模式 (Normal)": {
-        "tag_class": "mode-normal", "tag_text": "NORMAL",
-        "prompt_extra": """
-PERSONALITY: Friendly, natural, like a cool friend who's great at English. Casual and relaxed."""
-    }
+MODES = {
+    "🔥 毒舌模式 (Roast)": {"tag": "mode-roast", "text": "ROAST", "extra": "Sarcastic, savage, like Gordon Ramsay. Roast mistakes hard."},
+    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Celebrate EVERYTHING in ALL CAPS."},
+    "😎 正常模式 (Normal)": {"tag": "mode-normal", "text": "NORMAL", "extra": "Friendly, natural conversation partner."}
 }
 
 def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 正常模式 (Normal)"):
-    mode = PERSONALITY_MODES.get(personality, PERSONALITY_MODES["😎 正常模式 (Normal)"])
-    system_prompt = f"""
-You are an English conversation partner and a strict grammar teacher.
-Current Scenario: {scenario}
-{mode['prompt_extra']}
-
-You have TWO tasks:
-1. Reply to the user's message. Use AUTHENTIC, COLLOQUIAL SPOKEN ENGLISH.
-   CRITICAL: Completely adopt the persona. NEVER break character. NEVER say you are an AI.
-   Make up details to fit the scenario naturally.
-   If the user misunderstood, gently clarify and rephrase.
-
-2. Review the user's input.
-   Point out grammatical mistakes, spelling errors, or highly unnatural phrasing.
-   CRITICAL RULE: If the user writes ANY Chinese characters, this is ALWAYS an error.
-   You MUST put the Chinese text in "wrong_sentence" and provide the full English translation in "correction".
-   Even a single Chinese word mixed with English counts as an error.
-   Leave "errors" array EMPTY [] ONLY if the input is grammatically correct English with zero Chinese.
-   If there ARE errors, use Markdown bullet points.
-
-Output ONLY valid JSON:
-{{
-  "ai_reply": "Your response...",
-  "errors": [
-    {{
-      "wrong_sentence": "user's text",
-      "correction": "native way",
-      "explanation_en": "- Error 1.\\n- Error 2."
-    }}
-  ]
-}}
-"""
+    mode = MODES.get(personality, MODES["😎 正常模式 (Normal)"])
+    system_prompt = f"You are an English teacher. Scenario: {scenario}. Personality: {mode['extra']}\nTask: 1. Reply naturally in character. 2. Point out errors. RULE: ANY Chinese is an error. Output ONLY JSON: {{\"ai_reply\": \"...\", \"errors\": [{{ \"wrong_sentence\": \"...\", \"correction\": \"...\", \"explanation_en\": \"...\" }}]}}"
     messages = [{"role": "system", "content": system_prompt}]
     if history:
-        for msg in history:
-            if msg["role"] == "assistant":
-                messages.append({"role": "assistant", "content": msg.get("content", "")})
-            elif msg["role"] == "user":
-                messages.append({"role": "user", "content": msg.get("content", "")})
-    else:
-        messages.append({"role": "user", "content": user_text})
-
+        for m in history: messages.append({"role": m["role"], "content": m.get("content", "")})
+    else: messages.append({"role": "user", "content": user_text})
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat", messages=messages,
-            response_format={"type": "json_object"})
-        raw = response.choices[0].message.content
-    except Exception as e:
-        st.error(f"🔌 API 调用失败：{e}")
-        return {"ai_reply": "Connection error.", "errors": []}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        st.warning("⚠️ AI 返回了无法解析的内容。")
-        return {"ai_reply": raw, "errors": []}
-
+        resp = client.chat.completions.create(model="deepseek-chat", messages=messages, response_format={"type": "json_object"})
+        return json.loads(resp.choices[0].message.content)
+    except: return {"ai_reply": "Connection error.", "errors": []}
 
 def get_word_definition(word):
-    system_prompt = """
-You are a comprehensive English-Chinese dictionary.
-1. Single word: provide English definition and example sentence.
-2. Long phrase: explain meaning and provide usage example.
-3. Provide FULL Chinese translation.
-
-Output ONLY valid JSON:
-{"definition_en": "...", "example_en": "...", "translation_zh": "中文翻译：\\n1. 原意：...\\n2. 释义：...\\n3. 例句：..."}
-"""
+    prompt = "You are a dictionary. Define the word/phrase, give example, and provide Chinese translation. Output JSON: {\"definition_en\": \"...\", \"example_en\": \"...\", \"translation_zh\": \"...\"}"
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": word}],
-            response_format={"type": "json_object"})
-        raw = response.choices[0].message.content
-    except Exception as e:
-        st.error(f"🔌 查词失败：{e}")
-        return {"definition_en": "Load failed.", "example_en": "", "translation_zh": "加载失败"}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"definition_en": raw, "example_en": "", "translation_zh": "解析失败"}
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "system", "content": prompt}, {"role": "user", "content": word}], response_format={"type": "json_object"})
+        return json.loads(resp.choices[0].message.content)
+    except: return {"definition_en": "Error", "example_en": "", "translation_zh": "错误"}
 
 # ================= 6. 场景配置 =================
 SCENARIOS = {
-    "🎓 University Dorm — New roommate":
-        "Hey! You must be the new roommate. I'm Alex. Nice to finally meet you!",
-    "💻 Tech Lab — Python project":
-        "Hey, ready to dive into this Python project? Let's clean the data first.",
-    "🎮 Voice Chat — Gaming":
-        "Yo! Mic check. You down for a few rounds?",
-    "☕ Coffee Shop — Ordering":
-        "Hi there! What can I get started for you today?",
-    "👔 Job Interview — Internship":
-        "Hello! Thanks for coming in. Tell me a bit about yourself.",
-    "🤬 Arguing with a Stubborn Troll (跟杠精吵架)":
-        "Pfft. That's the dumbest take I've ever heard. You seriously believe that? Prove me wrong.",
-    "👽 Convince an Alien Not to Destroy Earth (说服外星人)":
-        "Human. We have scanned your planet. Give us ONE reason we should not vaporize it. You have 60 seconds.",
-    "💀 Negotiate with a Villain for Your Life (跟反派谈判)":
-        "Ah, you've been caught. I could let you go... but what's in it for me? Make it interesting.",
-    "🏴‍☠️ Black Market Haggling (黑市砍价)":
-        "This ancient artifact? 50,000 gold. Non-negotiable. ...Unless you've got something worth my time.",
-    "👻 Chatting with a Ghost (跟鬼聊天)":
-        "*candles flicker* Why have you disturbed my rest? Speak carefully, mortal... I haven't talked to anyone in 300 years.",
-    "🤖 Debating a Robot Who Hates Humans (跟机器人辩论)":
-        "Humans: slow, emotional, illogical. Prove to me humanity deserves to exist. I have analyzed 7 billion of you.",
-    "🧙 Asking a Wizard for a Favor (求巫师帮忙)":
-        "You want MY help? Hah! Last person who asked ended up as a frog. But go on... what do you need?",
-    "🕵️ Police Interrogation — You're the Suspect (警察审讯)":
-        "Sit down. We've got witnesses, we've got footage. This is your ONE chance to explain. Start talking.",
+    "🎓 University Dorm": "Hey! I'm Alex, your new roommate. Nice to meet you!",
+    "💻 Tech Lab — Python": "Hey, ready to dive into this Python project? Let's clean the data.",
+    "🎮 Voice Chat": "Yo! Mic check. You down for a few rounds?",
+    "👔 Job Interview": "Hello! Thanks for coming in. Tell me a bit about yourself.",
+    "🤬 Stubborn Troll": "Pfft. That's the dumbest take ever. Prove me wrong.",
+    "💀 Villain Negotiator": "You've been caught. What's in it for me if I let you go?",
+    "🕵️ Police Interrogation": "Sit down. We have footage. Start talking.",
 }
 
-# ================= 7. 侧边栏 =================
-with st.sidebar:
-    st.divider()
-    st.header("🔤 Quick Vocab Book")
-    st.write("单词或长句不懂？直接丢进来查。")
-    new_word = st.text_input("Type a word or phrase:")
-    if st.button("Search & Save"):
-        if new_word:
-            with st.spinner("Looking up..."):
-                result = get_word_definition(new_word)
-                def_en = result.get("definition_en", "")
-                ex_en = result.get("example_en", "")
-                trans_zh = result.get("translation_zh", "")
-                full_en_text = f"{def_en}\n\n**Example:** {ex_en}"
-                st.success("Added!")
-                st.markdown(f"**{new_word}**")
-                st.write(full_en_text)
-                with st.expander("👀 中文翻译"):
-                    st.write(trans_zh)
-                c.execute("INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)",
-                          (new_word, full_en_text, trans_zh))
-                conn.commit()
-
-    st.divider()
-    st.subheader("Saved Words")
-    c.execute("SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 15")
-    words = c.fetchall()
-    for w in words:
-        word_id, word_text, def_en, trans_zh = w[0], w[1], w[2], w[3]
-        with st.expander(f"📘 {word_text}"):
-            st.write(def_en)
-            if trans_zh:
-                if st.toggle("中文翻译", key=f"toggle_trans_{word_id}"):
-                    st.markdown(f"<span style='color: #2980b9;'>{trans_zh}</span>", unsafe_allow_html=True)
-            st.markdown("---")
-            if st.button("🗑️ 删除", key=f"btn_del_{word_id}"):
-                c.execute("DELETE FROM vocab WHERE id = ?", (word_id,))
-                conn.commit()
-                st.rerun()
-
-# ================= 8. 主界面 =================
+# ================= 7. 界面渲染 =================
 render_stats_bar()
-
-# 管理员显示访客日志
-if pwd == ADMIN_PWD:
-    show_visit_log()
-    st.divider()
+if pwd == ADMIN_PWD: show_visit_log(); st.divider()
 
 st.title("🔥 Zero Tolerance English Bootcamp")
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🗣️ Roleplay", "📝 Journal", "📖 Notebook", "🕰️ History", "🏆 Achievements"])
+t1, t2, t3, t4, t5 = st.tabs(["🗣️ Roleplay", "📝 Journal", "📖 Notebook", "🕰️ History", "🏆 Achievements"])
 
-# -------- 场景对话 --------
-with tab1:
-    mode_col, scene_col = st.columns([1, 2])
-    with mode_col:
-        personality = st.radio("AI 性格：", list(PERSONALITY_MODES.keys()), index=2, label_visibility="collapsed")
-        mode_info = PERSONALITY_MODES[personality]
-        st.markdown(f"<span class='mode-tag {mode_info['tag_class']}'>{mode_info['tag_text']}</span>",
-                    unsafe_allow_html=True)
-    with scene_col:
-        scenario_list = list(SCENARIOS.keys()) + ["✨ Custom Scenario (自定义)"]
-        selected = st.selectbox("Current Scenario:", scenario_list)
-
-    if selected == "✨ Custom Scenario (自定义)":
-        custom_desc = st.text_input("Describe your scenario:",
-                                     placeholder="e.g. Negotiating rent with a stingy landlord...")
-        current_scenario = custom_desc if custom_desc else None
-        default_greeting = "Alright, let's do this. Go ahead!"
-    else:
-        current_scenario = selected
-        default_greeting = SCENARIOS.get(current_scenario, "Hey!")
+with t1:
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        personality = st.radio("AI Personality:", list(MODES.keys()), index=2)
+        m_info = MODES[personality]
+        st.markdown(f"<span class='mode-tag {m_info['tag']}'>{m_info['text']}</span>", unsafe_allow_html=True)
+    with col2:
+        selected = st.selectbox("Scenario:", list(SCENARIOS.keys()) + ["✨ Custom"])
+        current_scenario = st.text_input("Describe custom scenario:") if selected == "✨ Custom" else selected
 
     if current_scenario:
-        st.markdown(f"<p style='color: #87CEFA; font-size: 0.85em; font-style: italic;'>/* {current_scenario} */</p>",
-                    unsafe_allow_html=True)
+        sk = f"{current_scenario}_{personality}"
+        if "messages" not in st.session_state or st.session_state.get("state_key") != sk:
+            st.session_state.messages = [{"role": "assistant", "content": SCENARIOS.get(current_scenario, "Go ahead!")}]
+            st.session_state.state_key = sk
 
-        state_key = f"{current_scenario}_{personality}"
-        if "messages" not in st.session_state or st.session_state.get("state_key") != state_key:
-            st.session_state.messages = [{"role": "assistant", "content": SCENARIOS.get(current_scenario, default_greeting)}]
-            st.session_state.state_key = state_key
-
-        save_col1, save_col2 = st.columns([5, 1])
-        with save_col2:
-            if st.button("💾 Save & End", use_container_width=True):
-                if len(st.session_state.messages) > 1:
-                    c.execute("INSERT INTO chat_history (scenario, chat_log) VALUES (?, ?)",
-                              (current_scenario, json.dumps(st.session_state.messages)))
-                    conn.commit()
-                    increment_sessions()
-                    st.session_state.messages = [{"role": "assistant", "content": SCENARIOS.get(current_scenario, default_greeting)}]
-                    st.success("✅ Saved! +30 XP!")
-                    add_xp(30)
-                    st.rerun()
+        if st.button("💾 Save & End Session"):
+            if len(st.session_state.messages) > 1:
+                c.execute("INSERT INTO chat_history (scenario, chat_log) VALUES (?, ?)", (current_scenario, json.dumps(st.session_state.messages)))
+                conn.commit(); increment_sessions(); add_xp(30)
+                st.session_state.messages = [{"role": "assistant", "content": "Session saved!"}]
+                st.rerun()
 
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                if "errors" in msg and msg["errors"]:
+                if msg.get("errors"):
                     st.error("🚨 Errors Detected!")
-                    for err in msg["errors"]:
-                        st.write(f"❌ **You wrote:** {err.get('wrong_sentence')}")
-                        st.write(f"✅ **Native way:** {err.get('correction')}")
-                        st.info(f"💡 **Rule:**\n\n{err.get('explanation_en')}")
-                st.markdown(msg['content'])
+                    for e in msg["errors"]:
+                        st.write(f"❌ **You:** {e['wrong_sentence']}\n✅ **Native:** {e['correction']}")
+                st.markdown(msg["content"])
 
-        if user_input := st.chat_input("Type your response in English..."):
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.chat_message("user"):
-                st.markdown(user_input)
+        if user_in := st.chat_input("English only..."):
+            st.session_state.messages.append({"role": "user", "content": user_in})
+            with st.chat_message("user"): st.markdown(user_in)
             with st.spinner("Thinking..."):
-                result = chat_and_correct_agent(
-                    user_text=user_input, scenario=current_scenario,
-                    history=st.session_state.messages, personality=personality)
-                errors = result.get("errors", [])
-                st.session_state.messages.append({
-                    "role": "assistant", "content": result.get("ai_reply", ""), "errors": errors})
-                is_perfect = len(errors) == 0
-                is_roast = "毒舌" in personality
-                xp_gain = 15 if is_perfect else 10
-                if is_roast: xp_gain += 5
-                add_xp(xp_gain, perfect=is_perfect, is_roast=is_roast)
-                if errors:
-                    for err in errors:
-                        c.execute("INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)",
-                                  ("Chat: " + current_scenario, err.get('wrong_sentence'), err.get('correction'), err.get('explanation_en')))
-                    conn.commit()
+                res = chat_and_correct_agent(user_in, current_scenario, st.session_state.messages, personality)
+                errs = res.get("errors", [])
+                st.session_state.messages.append({"role": "assistant", "content": res.get("ai_reply", ""), "errors": errs})
+                is_p = len(errs) == 0
+                add_xp(20 if is_p else 10, perfect=is_p, is_roast="毒舌" in personality)
+                for e in errs:
+                    c.execute("INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)",
+                              ("Chat: " + current_scenario, e['wrong_sentence'], e['correction'], e['explanation_en']))
+                conn.commit()
             st.rerun()
 
-# -------- 日记 --------
-with tab2:
-    st.subheader("Daily Reflection (English Only)")
-    journal_text = st.text_area("Write down your thoughts...", height=200)
-    if st.button("🔍 Check & Submit"):
-        if journal_text:
-            with st.spinner("Checking..."):
-                result = chat_and_correct_agent(journal_text, "Evaluating a written daily journal.")
-                errors = result.get("errors", [])
-                if errors:
-                    st.error("🚨 Errors found.")
-                    for err in errors:
-                        st.write(f"❌ {err.get('wrong_sentence')}")
-                        st.write(f"✅ {err.get('correction')}")
-                        st.info(f"💡 **Rule:**\n\n{err.get('explanation_en')}")
-                        c.execute("INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)",
-                                  ("Journal", err.get('wrong_sentence'), err.get('correction'), err.get('explanation_en')))
-                        conn.commit()
-                    add_xp(10, perfect=False)
-                else:
-                    st.success("🎉 Flawless! +20 XP!")
-                    add_xp(20, perfect=True)
-                st.rerun()
+with t2:
+    st.subheader("Daily Journal")
+    jt = st.text_area("Write your day...", height=150)
+    if st.button("Check Journal"):
+        if jt:
+            res = chat_and_correct_agent(jt, "Journal Evaluation")
+            errs = res.get("errors", [])
+            if errs:
+                st.error("Errors found.")
+                for e in errs:
+                    st.write(f"❌ {e['wrong_sentence']} -> ✅ {e['correction']}")
+                    c.execute("INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)", ("Journal", e['wrong_sentence'], e['correction'], e['explanation_en']))
+                conn.commit(); add_xp(10)
+            else: st.success("Perfect!"); add_xp(25, perfect=True)
 
-# -------- 错题本 --------
-with tab3:
-    st.subheader("Your Personal Knowledge Base")
-    nb_col1, nb_col2 = st.columns([3, 1])
-    with nb_col1:
-        filter_source = st.selectbox("Filter:", ["All"] +
-                                      [r[0] for r in c.execute("SELECT DISTINCT source FROM mistakes").fetchall()])
-    with nb_col2:
-        st.write("")
-        if st.button("🗑️ Clear All", use_container_width=True):
-            st.session_state["confirm_clear_all"] = True
-    if st.session_state.get("confirm_clear_all"):
-        st.warning("⚠️ 确定删除全部？")
-        cc1, cc2, _ = st.columns([1, 1, 4])
-        with cc1:
-            if st.button("✅ 确认"):
-                c.execute("DELETE FROM mistakes")
-                conn.commit()
-                st.session_state["confirm_clear_all"] = False
-                st.rerun()
-        with cc2:
-            if st.button("❌ 取消"):
-                st.session_state["confirm_clear_all"] = False
-                st.rerun()
-    if filter_source == "All":
-        c.execute("SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC")
-    else:
-        c.execute("SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes WHERE source = ? ORDER BY id DESC", (filter_source,))
-    records = c.fetchall()
-    if records:
-        for row in records:
-            rec_id = row[0]
-            exp_col, del_col = st.columns([10, 1])
-            with del_col:
-                if st.button("🗑️", key=f"del_m_{rec_id}"):
-                    c.execute("DELETE FROM mistakes WHERE id = ?", (rec_id,))
-                    conn.commit()
-                    st.rerun()
-            with exp_col:
-                with st.expander(f"📅 {row[1]} | {row[2]}"):
-                    st.markdown(f"**❌ You:** {row[3]}")
-                    st.markdown(f"**✅ Native:** {row[4]}")
-                    st.markdown(f"**🧠 Analysis:**\n{row[5]}")
-    else:
-        st.write("No mistakes yet 🎯")
+with t3:
+    st.subheader("Knowledge Base")
+    recs = c.execute("SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC").fetchall()
+    for r in recs:
+        with st.expander(f"📅 {r[1]} | {r[2]}"):
+            st.markdown(f"❌ {r[3]}\n\n✅ {r[4]}\n\n💡 {r[5]}")
+            if st.button("🗑️", key=f"del_m_{r[0]}"):
+                c.execute("DELETE FROM mistakes WHERE id=?", (r[0],)); conn.commit(); st.rerun()
 
-# -------- 历史记录 --------
-with tab4:
-    st.subheader("🕰️ Past Conversations")
-    c.execute("SELECT id, date, scenario, chat_log FROM chat_history ORDER BY id DESC")
-    histories = c.fetchall()
-    if histories:
-        for row in histories:
-            exp_col, del_col = st.columns([10, 1])
-            with del_col:
-                if st.button("🗑️", key=f"del_h_{row[0]}"):
-                    c.execute("DELETE FROM chat_history WHERE id = ?", (row[0],))
-                    conn.commit()
-                    st.rerun()
-            with exp_col:
-                with st.expander(f"📅 {row[1]} | 🎬 {row[2]}"):
-                    for msg in json.loads(row[3]):
-                        icon = "🤖" if msg["role"] == "assistant" else "👤"
-                        color = "#2c3e50" if msg["role"] == "assistant" else "#2980b9"
-                        st.markdown(f"<b style='color:{color};'>{icon}</b> {msg['content']}", unsafe_allow_html=True)
-    else:
-        st.write("No saved conversations yet.")
+with t4:
+    st.subheader("Past Conversations")
+    hists = c.execute("SELECT id, date, scenario, chat_log FROM chat_history ORDER BY id DESC").fetchall()
+    for h in hists:
+        with st.expander(f"📅 {h[1]} | {h[2]}"):
+            for m in json.loads(h[3]): st.write(f"{'🤖' if m['role']=='assistant' else '👤'}: {m['content']}")
+            if st.button("🗑️", key=f"del_h_{h[0]}"):
+                c.execute("DELETE FROM chat_history WHERE id=?", (h[0],)); conn.commit(); st.rerun()
 
-# -------- 成就墙 --------
-with tab5:
-    st.subheader("🏆 Achievement Wall")
-    stats = get_stats()
-    st.markdown(f"**Messages:** {stats['total_messages']} | **Perfect:** {stats['perfect_messages']} | "
-                f"**Sessions:** {stats['total_sessions']} | **Streak:** {stats['streak']}d")
-    st.write("")
-    c.execute("SELECT name, description, icon, tier, unlocked, unlock_date FROM achievements ORDER BY unlocked DESC, tier DESC")
-    all_ach = c.fetchall()
-    unlocked = [a for a in all_ach if a[4] == 1]
-    locked = [a for a in all_ach if a[4] == 0]
-    if unlocked:
-        st.markdown("### ✅ Unlocked")
-        html = ""
-        for name, desc, icon, tier, _, udate in unlocked:
-            html += f"<span class='badge badge-{tier}' title='{desc} ({udate})'>{icon} {name}</span> "
-        st.markdown(html, unsafe_allow_html=True)
-        st.write("")
-    if locked:
-        st.markdown("### 🔒 Locked")
-        html = ""
-        for name, desc, icon, tier, _, _ in locked:
-            html += f"<span class='badge badge-locked' title='{desc}'>❓ {name}</span> "
-        st.markdown(html, unsafe_allow_html=True)
+with t5:
+    st.subheader("Achievements")
+    achs = c.execute("SELECT name, description, icon, tier, unlocked FROM achievements ORDER BY unlocked DESC").fetchall()
+    html = ""
+    for name, desc, icon, tier, unl in achs:
+        t_cls = f"badge-{tier}" if unl else "badge-locked"
+        html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
+    st.markdown(html, unsafe_allow_html=True)
+
+# --- Sidebar Vocab ---
+with st.sidebar:
+    st.divider(); st.subheader("Vocab Book")
+    nw = st.text_input("Quick search:")
+    if st.button("Search & Save"):
+        if nw:
+            res = get_word_definition(nw)
+            df, ex, tr = res.get("definition_en"), res.get("example_en"), res.get("translation_zh")
+            st.markdown(f"**{nw}**: {df}\n\n*Ex: {ex}*")
+            c.execute("INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, f"{df}\nEx: {ex}", tr))
+            conn.commit(); st.success("Saved!")
+    
+    st.divider(); st.write("Recent Words:")
+    words = c.execute("SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 10").fetchall()
+    for wid, w, d, tr in words:
+        with st.expander(f"📘 {w}"):
+            st.write(d)
+            if st.toggle("Show Chinese", key=f"t_{wid}"): st.info(tr)
+            if st.button("🗑️", key=f"dw_{wid}"): c.execute("DELETE FROM vocab WHERE id=?", (wid,)); conn.commit(); st.rerun()
