@@ -58,7 +58,6 @@ def show_visit_log():
         st.error("读取日志失败")
 
 # ================= 0.5 终极防盗门：平行宇宙双账号系统 =================
-# 特别优化：加入暗号可见性切换，解决 iPad 无法输入中文的问题
 with st.sidebar:
     st.header("🔒 专属验证")
     show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
@@ -83,14 +82,12 @@ elif pwd != "":
 else:
     st.title("🔒 零容忍英语训练营 (已锁定)")
     st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
-    # 这里的 CSS 注入是为了在锁定状态下也隐藏官方元素
     st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
     st.stop()
 
 # ================= 1. 注入 CSS（强效隐藏所有官方组件） =================
 st.markdown("""
 <style>
-    /* 强效隐藏官方外壳 */
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     .stAppToolbar { display: none !important; }
@@ -98,7 +95,6 @@ st.markdown("""
     footer { visibility: hidden !important; }
     .stDeployButton { display:none !important; }
 
-    /* 侧边栏按钮和游戏化样式 */
     section[data-testid="stSidebar"] button[kind="secondary"] {
         font-size: 0.75em !important;
     }
@@ -276,7 +272,8 @@ client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
 MODES = {
     "🔥 毒舌模式 (Roast)": {"tag": "mode-roast", "text": "ROAST", "extra": "Sarcastic, savage, like Gordon Ramsay. Roast mistakes hard."},
-    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Celebrate EVERYTHING in ALL CAPS."},
+    # 👇 这里已修正，去掉了 ALL CAPS 要求
+    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Celebrate EVERYTHING with high energy and exclamation marks, but use normal sentence casing (no all-caps)."},
     "😎 正常模式 (Normal)": {"tag": "mode-normal", "text": "NORMAL", "extra": "Friendly, natural conversation partner."}
 }
 
@@ -405,7 +402,6 @@ with t5:
         html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
     st.markdown(html, unsafe_allow_html=True)
 
-# --- Sidebar Vocab ---
 with st.sidebar:
     st.divider(); st.subheader("Vocab Book")
     nw = st.text_input("Quick search:")
