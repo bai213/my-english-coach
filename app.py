@@ -4,7 +4,6 @@ st.set_page_config(page_title="Hardcore English Coach", layout="wide")
 
 import sqlite3
 import json
-import os
 import uuid
 from datetime import datetime
 from openai import OpenAI
@@ -19,60 +18,7 @@ def run_query(db_file, query, params=(), fetch=False, commit=False):
             return c.fetchall()
         return None
 
-def init_visit_log():
-    run_query('visit_log.db', '''
-    CREATE TABLE IF NOT EXISTS visit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        login_time TEXT, user_type TEXT, ip TEXT
-    )''', commit=True)
-
-init_visit_log()
-
-def log_visit(user_type):
-    try:
-        if "user_uuid" not in st.session_state:
-            st.session_state.user_uuid = str(uuid.uuid4())[:8]
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        session_id = st.session_state.user_uuid
-        run_query('visit_log.db', "INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
-                  (now, user_type, session_id), commit=True)
-    except:
-        pass
-
-def show_visit_log():
-    st.subheader("👀 访客登录记录（仅管理员可见）")
-    logs = run_query('visit_log.db', "SELECT login_time, user_type, ip FROM visit_log ORDER BY id DESC LIMIT 50", fetch=True)
-    if logs:
-        for t, ut, ip in logs:
-            st.markdown(f"**{t}** | {ut} | 会话：{ip[:12]}...")
-    else:
-        st.info("暂无访客记录")
-
-with st.sidebar:
-    st.header("🔒 专属验证")
-    show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
-    pwd_type = "default" if show_pwd else "password"
-    pwd = st.text_input("🔑 请输入暗号：", type=pwd_type)
-
-ADMIN_PWD = st.secrets["ADMIN_PWD"]
-GUEST_PWD = st.secrets["GUEST_PWD"]
-
-if pwd == ADMIN_PWD:
-    db_name = "notebook.db"
-    log_visit("ADMIN")
-    st.sidebar.success("👑 欢迎回来，主人！")
-elif pwd == GUEST_PWD:
-    db_name = "guest.db"
-    log_visit("GUEST")
-    st.sidebar.info("👋 欢迎体验！")
-elif pwd != "":
-    st.sidebar.warning("✋ 停！暗号不对。")
-    st.stop()
-else:
-    st.title("🔒 零容忍英语训练营 (已锁定)")
-    st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
-    st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
-    st.stop()
+db_name = "notebook.db"
 
 st.markdown("""
 <style>
@@ -91,7 +37,6 @@ st.markdown("""
     .badge-bronze { background: linear-gradient(135deg, #e8c40a, #cd9b6e); color: #333; }
     .badge-locked { background: #3a3a3a; color: #777; }
     .streak-fire { font-size: 1.4em; }
-    .mode-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-left: 8px; }
     .mode-roast { background: #e74c3c; color: white; }
     .mode-hype { background: #2ecc71; color: white; }
     .mode-normal { background: #3498db; color: white; }
@@ -205,9 +150,9 @@ api_key = st.secrets["DEEPSEEK_API_KEY"]
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
 MODES = {
-    "🔥 毒舌模式 (Roast)": {"tag": "mode-roast", "text": "ROAST", "extra": "Sarcastic, savage. Roast mistakes hard."},
-    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Use normal casing, lots of exclamation marks!"},
-    "😎 正常模式 (Normal)": {"tag": "mode-normal", "text": "NORMAL", "extra": "Friendly, natural conversation partner."}
+    "🔥 毒舌模式 (Roast)": {"extra": "Sarcastic, savage. Roast mistakes hard."},
+    "🌈 夸夸模式 (Hype)": {"extra": "Super enthusiastic cheerleader. Lots of exclamation marks!"},
+    "😎 正常模式 (Normal)": {"extra": "Friendly, natural conversation partner."}
 }
 
 def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 正常模式 (Normal)"):
@@ -231,10 +176,6 @@ def get_word_definition(word):
 
 # ================= 主界面 =================
 render_stats_bar()
-if pwd == ADMIN_PWD:
-    show_visit_log()
-    st.divider()
-
 st.title("🔥 Zero Tolerance English Bootcamp")
 
 t1, t2, t3 = st.tabs(["🗣️ Roleplay", "📖 History", "🏆 Achievements"])
@@ -279,7 +220,6 @@ with t1:
             st.rerun()
 
 with t2:
-    st.subheader("📖 History")
     sub1, sub2 = st.tabs(["❌ 语法错误记录", "🕰️ 对话历史"])
 
     with sub1:
@@ -322,12 +262,11 @@ with t3:
 
 # ================= 侧边栏生词本 =================
 with st.sidebar:
-    st.divider()
     st.subheader("📚 Vocab Book")
     nw = st.text_input("Quick search:")
     if st.button("Search & Save"):
         if nw:
-            with st.spinner("Searching AI Dictionary..."):
+            with st.spinner("Searching..."):
                 res = get_word_definition(nw)
                 df, ex, tr = res.get("definition_en"), res.get("example_en"), res.get("translation_zh")
                 st.markdown(f"**{nw}**")
@@ -335,7 +274,6 @@ with st.sidebar:
                 if ex: st.info(f"Example: {ex}")
                 run_query(db_name, "INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, f"{df}\n\nEx: {ex}", tr), commit=True)
                 st.success("Saved!")
-
     st.divider()
     st.write("Recent Words:")
     words = run_query(db_name, "SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 10", fetch=True)
