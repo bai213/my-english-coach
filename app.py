@@ -1,13 +1,15 @@
 import streamlit as st
 
+# ================= 0. 页面配置（必须是第一个 st 命令）=================
 st.set_page_config(page_title="Hardcore English Coach", layout="wide")
 
 import sqlite3
 import json
-import uuid
+import os
 from datetime import datetime
 from openai import OpenAI
 
+# ================= 1. 数据库工具函数 =================
 def run_query(db_file, query, params=(), fetch=False, commit=False):
     with sqlite3.connect(db_file, check_same_thread=False) as conn:
         c = conn.cursor()
@@ -18,8 +20,7 @@ def run_query(db_file, query, params=(), fetch=False, commit=False):
             return c.fetchall()
         return None
 
-db_name = "notebook.db"
-
+# ================= 2. 注入 CSS =================
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -28,6 +29,8 @@ st.markdown("""
     div[data-testid="stStatusWidget"] { display: none !important; }
     footer { visibility: hidden !important; }
     .stDeployButton { display:none !important; }
+
+    section[data-testid="stSidebar"] button[kind="secondary"] { font-size: 0.75em !important; }
     .xp-bar-bg { background: #2c2c2c; border-radius: 10px; height: 22px; width: 100%; position: relative; overflow: hidden; }
     .xp-bar-fill { height: 100%; border-radius: 10px; background: linear-gradient(90deg, #f39c12, #e74c3c, #e91e63); transition: width 0.5s ease; }
     .xp-bar-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 0.75em; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
@@ -37,11 +40,15 @@ st.markdown("""
     .badge-bronze { background: linear-gradient(135deg, #e8c40a, #cd9b6e); color: #333; }
     .badge-locked { background: #3a3a3a; color: #777; }
     .streak-fire { font-size: 1.4em; }
+    .mode-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-left: 8px; }
     .mode-roast { background: #e74c3c; color: white; }
     .mode-hype { background: #2ecc71; color: white; }
     .mode-normal { background: #3498db; color: white; }
 </style>
 """, unsafe_allow_html=True)
+
+# ================= 3. 数据库初始化 =================
+db_name = "notebook.db"
 
 def init_db(database_file):
     with sqlite3.connect(database_file) as conn:
@@ -49,6 +56,7 @@ def init_db(database_file):
         c.execute('CREATE TABLE IF NOT EXISTS mistakes (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, source TEXT, wrong_sentence TEXT, correction TEXT, explanation_en TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS vocab (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, word TEXT, definition_en TEXT, translation_zh TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, scenario TEXT, chat_log TEXT)')
+        c.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, title TEXT, content TEXT, feedback TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS user_stats (id INTEGER PRIMARY KEY CHECK (id = 1), xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, streak INTEGER DEFAULT 0, last_active TEXT, total_messages INTEGER DEFAULT 0, perfect_messages INTEGER DEFAULT 0, total_sessions INTEGER DEFAULT 0)')
         c.execute('CREATE TABLE IF NOT EXISTS achievements (id TEXT PRIMARY KEY, name TEXT, description TEXT, icon TEXT, tier TEXT, unlocked INTEGER DEFAULT 0, unlock_date TEXT)')
         c.execute("INSERT OR IGNORE INTO user_stats (id, xp, level, streak, total_messages, perfect_messages, total_sessions) VALUES (1, 0, 1, 0, 0, 0, 0)")
@@ -75,6 +83,7 @@ def init_db(database_file):
 
 init_db(db_name)
 
+# ================= 4. 游戏化逻辑 =================
 def get_stats():
     res = run_query(db_name, "SELECT xp, level, streak, last_active, total_messages, perfect_messages, total_sessions FROM user_stats WHERE id = 1", fetch=True)
     row = res[0]
@@ -146,13 +155,14 @@ def render_stats_bar():
     st.markdown(f'<div class="xp-bar-bg"><div class="xp-bar-fill" style="width: {pct}%;"></div><div class="xp-bar-text">{stats["xp"]} / {xp_needed} XP</div></div>', unsafe_allow_html=True)
     st.write("")
 
+# ================= 5. AI & 查词逻辑 =================
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
 MODES = {
-    "🔥 毒舌模式 (Roast)": {"extra": "Sarcastic, savage. Roast mistakes hard."},
-    "🌈 夸夸模式 (Hype)": {"extra": "Super enthusiastic cheerleader. Lots of exclamation marks!"},
-    "😎 正常模式 (Normal)": {"extra": "Friendly, natural conversation partner."}
+    "🔥 毒舌模式 (Roast)": {"tag": "mode-roast", "text": "ROAST", "extra": "Sarcastic, savage. Roast mistakes hard."},
+    "🌈 夸夸模式 (Hype)": {"tag": "mode-hype", "text": "HYPE", "extra": "Super enthusiastic cheerleader. Use normal casing (no all-caps), but lots of exclamation marks!"},
+    "😎 正常模式 (Normal)": {"tag": "mode-normal", "text": "NORMAL", "extra": "Friendly, natural conversation partner."}
 }
 
 def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 正常模式 (Normal)"):
@@ -167,6 +177,22 @@ def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 
         return json.loads(resp.choices[0].message.content)
     except: return {"ai_reply": "Connection error.", "errors": []}
 
+def grade_journal(title, content):
+    prompt = """You are a strict but encouraging English writing coach. The student wrote a journal entry.
+1. Give overall feedback (2-3 sentences)
+2. List specific grammar/vocabulary/expression errors with corrections
+3. Give a score out of 10
+Output JSON ONLY: {"overall": "...", "errors": [{"original": "...", "correction": "...", "explanation": "..."}], "score": 8, "rewritten": "A polished version of their entry"}"""
+    try:
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Title: {title}\n\n{content}"}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(resp.choices[0].message.content)
+    except:
+        return {"overall": "Connection error.", "errors": [], "score": 0, "rewritten": ""}
+
 def get_word_definition(word):
     prompt = "You are a dictionary. Define the word/phrase, give example, and provide Chinese translation. Output JSON: {\"definition_en\": \"...\", \"example_en\": \"...\", \"translation_zh\": \"...\"}"
     try:
@@ -174,11 +200,10 @@ def get_word_definition(word):
         return json.loads(resp.choices[0].message.content)
     except: return {"definition_en": "Error", "example_en": "", "translation_zh": "查询失败"}
 
-# ================= 主界面 =================
+# ================= 6. 主界面 Tab 渲染 =================
 render_stats_bar()
 st.title("🔥 Zero Tolerance English Bootcamp")
-
-t1, t2, t3 = st.tabs(["🗣️ Roleplay", "📖 History", "🏆 Achievements"])
+t1, t2, t3, t4, t5 = st.tabs(["🗣️ Roleplay", "📝 Journal", "📖 Notebook", "🕰️ History", "🏆 Achievements"])
 
 with t1:
     c1, c2 = st.columns([1, 2])
@@ -220,38 +245,154 @@ with t1:
             st.rerun()
 
 with t2:
-    sub1, sub2 = st.tabs(["❌ 语法错误记录", "🕰️ 对话历史"])
+    st.subheader("📝 English Journal")
+    st.caption("Write freely in English — AI will grade your grammar, vocabulary, and style.")
 
-    with sub1:
-        recs = run_query(db_name, "SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC", fetch=True)
-        if recs:
-            for r in recs:
-                with st.expander(f"📅 {r[1]} | {r[2]}"):
-                    st.markdown(f"**❌ You said:** {r[3]}")
-                    st.markdown(f"**✅ Native:** {r[4]}")
-                    if r[5]: st.info(f"💡 {r[5]}")
-                    if st.button("🗑️ 删除", key=f"del_m_{r[0]}"):
-                        run_query(db_name, "DELETE FROM mistakes WHERE id=?", (r[0],), commit=True)
-                        st.rerun()
-        else:
-            st.info("暂无错误记录，继续练习吧！💪")
+    with st.form("journal_form", clear_on_submit=True):
+        j_title = st.text_input("Title (optional):", placeholder="e.g. My weekend, A funny thing happened...")
+        j_content = st.text_area("Write your journal entry here:", height=200, placeholder="Today I went to the park and...")
+        submitted = st.form_submit_button("✅ Submit for Grading")
 
-    with sub2:
-        histories = run_query(db_name, "SELECT id, date, scenario, chat_log FROM chat_history ORDER BY id DESC", fetch=True)
-        if histories:
-            for h in histories:
-                with st.expander(f"📅 {h[1]} | {h[2]}"):
-                    chat_log = json.loads(h[3])
-                    for msg in chat_log:
-                        role_icon = "🧑" if msg["role"] == "user" else "🤖"
-                        st.markdown(f"{role_icon} **{msg['role'].capitalize()}:** {msg.get('content', '')}")
-                    if st.button("🗑️ 删除", key=f"del_h_{h[0]}"):
-                        run_query(db_name, "DELETE FROM chat_history WHERE id=?", (h[0],), commit=True)
-                        st.rerun()
+    if submitted and j_content.strip():
+        with st.spinner("AI is reading your entry..."):
+            feedback = grade_journal(j_title or "Untitled", j_content)
+        score = feedback.get("score", 0)
+        overall = feedback.get("overall", "")
+        errors = feedback.get("errors", [])
+        rewritten = feedback.get("rewritten", "")
+
+        # Score display
+        score_color = "#2ecc71" if score >= 8 else "#f39c12" if score >= 5 else "#e74c3c"
+        st.markdown(f"<h2 style='color:{score_color}'>Score: {score}/10</h2>", unsafe_allow_html=True)
+        st.info(f"💬 {overall}")
+
+        if errors:
+            st.markdown("**✏️ Errors to fix:**")
+            for i, e in enumerate(errors, 1):
+                st.error(f"**{i}.** ❌ `{e.get('original', '')}` → ✅ `{e.get('correction', '')}`\n\n_{e.get('explanation', '')}_")
+                run_query(db_name, "INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)",
+                          ("Journal: " + (j_title or "Untitled"), e.get('original', ''), e.get('correction', ''), e.get('explanation', '')), commit=True)
         else:
-            st.info("还没有保存过对话，结束 Roleplay 时点击「Save & End Session」即可保存！")
+            st.success("🎉 No errors found! Perfect entry!")
+
+        if rewritten:
+            with st.expander("✨ See polished version"):
+                st.markdown(rewritten)
+
+        # Save to DB and add XP
+        is_perfect = len(errors) == 0
+        run_query(db_name, "INSERT INTO journal (title, content, feedback) VALUES (?, ?, ?)",
+                  (j_title or "Untitled", j_content, json.dumps(feedback)), commit=True)
+        add_xp(25 if is_perfect else 15, perfect=is_perfect)
+        st.toast("Entry saved! XP earned 🎉")
+
+    st.divider()
+    st.markdown("**📚 Past Entries:**")
+    past = run_query(db_name, "SELECT id, date, title, content, feedback FROM journal ORDER BY id DESC LIMIT 20", fetch=True)
+    if past:
+        for pid, pdate, ptitle, pcontent, pfeedback in past:
+            fb = json.loads(pfeedback) if pfeedback else {}
+            score_label = f"🏅 {fb.get('score', '?')}/10" if fb else ""
+            with st.expander(f"📅 {pdate[:10]} | {ptitle} {score_label}"):
+                st.markdown(pcontent)
+                if fb.get("overall"):
+                    st.info(fb["overall"])
+                if st.button("🗑️ Delete", key=f"del_j_{pid}"):
+                    run_query(db_name, "DELETE FROM journal WHERE id=?", (pid,), commit=True); st.rerun()
+    else:
+        st.info("No journal entries yet. Write your first one above!")
 
 with t3:
+    st.subheader("📖 Knowledge Base — All Errors")
+    recs = run_query(db_name, "SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC", fetch=True)
+    if recs:
+        # 批量删除按钮
+        if st.button("🗑️ Clear All", type="secondary"):
+            run_query(db_name, "DELETE FROM mistakes", commit=True); st.rerun()
+        st.write(f"**{len(recs)} records**")
+        for r in recs:
+            rid, rdate, rsource, rwrong, rcorrect, rexplain = r
+            col_exp, col_del = st.columns([10, 1])
+            with col_exp:
+                with st.expander(f"📅 {rdate[:16]} | {rsource}"):
+                    st.markdown(f"**❌ You:** {rwrong}")
+                    st.markdown(f"**✅ Native:** {rcorrect}")
+                    if rexplain:
+                        st.caption(rexplain)
+            with col_del:
+                st.write("")  # 空行对齐
+                if st.button("🗑️", key=f"del_m_{rid}", help="Delete this record"):
+                    run_query(db_name, "DELETE FROM mistakes WHERE id=?", (rid,), commit=True); st.rerun()
+    else:
+        st.info("No errors recorded yet. Keep chatting!")
+
+with t4:
+    st.subheader("🕰️ History — Chats & Journals")
+
+    # 聊天记录
+    chats = run_query(db_name, "SELECT id, date, scenario, chat_log FROM chat_history ORDER BY id DESC", fetch=True)
+    # 日记记录
+    journals = run_query(db_name, "SELECT id, date, title, content, feedback FROM journal ORDER BY id DESC", fetch=True)
+
+    # 合并并按时间排序
+    all_records = []
+    for c in (chats or []):
+        all_records.append({"type": "chat", "id": c[0], "date": c[1], "data": c})
+    for j in (journals or []):
+        all_records.append({"type": "journal", "id": j[0], "date": j[1], "data": j})
+    all_records.sort(key=lambda x: x["date"], reverse=True)
+
+    if not all_records:
+        st.info("No history yet.")
+    else:
+        st.write(f"**{len(all_records)} records total** — 💬 {len(chats or [])} chats · 📝 {len(journals or [])} journals")
+        for rec in all_records:
+            if rec["type"] == "chat":
+                _, rdate, rscenario, rchat_log = rec["data"]
+                rid = rec["id"]
+                label = f"💬 {rdate[:16]} | {rscenario}"
+                col_exp, col_del = st.columns([10, 1])
+                with col_exp:
+                    with st.expander(label):
+                        try:
+                            msgs = json.loads(rchat_log)
+                            for m in msgs:
+                                role_icon = "🧑" if m["role"] == "user" else "🤖"
+                                if m.get("errors"):
+                                    for e in m["errors"]:
+                                        st.error(f"❌ {e['wrong_sentence']} → ✅ {e['correction']}")
+                                st.markdown(f"{role_icon} {m.get('content', '')}")
+                        except:
+                            st.write(rchat_log)
+                with col_del:
+                    st.write("")
+                    if st.button("🗑️", key=f"del_ch_{rid}"):
+                        run_query(db_name, "DELETE FROM chat_history WHERE id=?", (rid,), commit=True); st.rerun()
+
+            elif rec["type"] == "journal":
+                _, rdate, rtitle, rcontent, rfeedback = rec["data"]
+                rid = rec["id"]
+                fb = json.loads(rfeedback) if rfeedback else {}
+                score_label = f" 🏅{fb.get('score', '?')}/10" if fb else ""
+                label = f"📝 {rdate[:16]} | {rtitle}{score_label}"
+                col_exp, col_del = st.columns([10, 1])
+                with col_exp:
+                    with st.expander(label):
+                        st.markdown(rcontent)
+                        if fb.get("overall"):
+                            st.info(f"💬 {fb['overall']}")
+                        if fb.get("errors"):
+                            for e in fb["errors"]:
+                                st.error(f"❌ `{e.get('original','')}` → ✅ `{e.get('correction','')}`")
+                        if fb.get("rewritten"):
+                            with st.expander("✨ Polished version"):
+                                st.markdown(fb["rewritten"])
+                with col_del:
+                    st.write("")
+                    if st.button("🗑️", key=f"del_j2_{rid}"):
+                        run_query(db_name, "DELETE FROM journal WHERE id=?", (rid,), commit=True); st.rerun()
+
+with t5:
     st.subheader("Achievements")
     achs = run_query(db_name, "SELECT name, description, icon, tier, unlocked FROM achievements ORDER BY unlocked DESC", fetch=True)
     html = ""
@@ -260,13 +401,13 @@ with t3:
         html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
     st.markdown(html, unsafe_allow_html=True)
 
-# ================= 侧边栏生词本 =================
+# --- Sidebar Vocab ---
 with st.sidebar:
-    st.subheader("📚 Vocab Book")
+    st.subheader("Vocab Book")
     nw = st.text_input("Quick search:")
     if st.button("Search & Save"):
         if nw:
-            with st.spinner("Searching..."):
+            with st.spinner("Searching AI Dictionary..."):
                 res = get_word_definition(nw)
                 df, ex, tr = res.get("definition_en"), res.get("example_en"), res.get("translation_zh")
                 st.markdown(f"**{nw}**")
@@ -274,14 +415,12 @@ with st.sidebar:
                 if ex: st.info(f"Example: {ex}")
                 run_query(db_name, "INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, f"{df}\n\nEx: {ex}", tr), commit=True)
                 st.success("Saved!")
-    st.divider()
-    st.write("Recent Words:")
+
+    st.divider(); st.write("Recent Words:")
     words = run_query(db_name, "SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 10", fetch=True)
     if words:
         for wid, w, d, tr in words:
             with st.expander(f"📘 {w}"):
                 st.write(d)
                 if st.toggle("Show Chinese", key=f"t_{wid}"): st.info(tr)
-                if st.button("🗑️", key=f"dw_{wid}"):
-                    run_query(db_name, "DELETE FROM vocab WHERE id=?", (wid,), commit=True)
-                    st.rerun()
+                if st.button("🗑️", key=f"dw_{wid}"): run_query(db_name, "DELETE FROM vocab WHERE id=?", (wid,), commit=True); st.rerun()
