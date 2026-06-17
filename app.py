@@ -303,15 +303,94 @@ with t2:
         st.info("No journal entries yet. Write your first one above!")
 
 with t3:
-    st.subheader("Knowledge Base")
+    st.subheader("📖 Knowledge Base — All Errors")
     recs = run_query(db_name, "SELECT id, date, source, wrong_sentence, correction, explanation_en FROM mistakes ORDER BY id DESC", fetch=True)
     if recs:
+        # 批量删除按钮
+        if st.button("🗑️ Clear All", type="secondary"):
+            run_query(db_name, "DELETE FROM mistakes", commit=True); st.rerun()
+        st.write(f"**{len(recs)} records**")
         for r in recs:
-            with st.expander(f"📅 {r[1]} | {r[2]}"):
-                st.markdown(f"**❌ You:** {r[3]}\n\n**✅ Native:** {r[4]}")
-                if st.button("🗑️", key=f"del_m_{r[0]}"):
-                    run_query(db_name, "DELETE FROM mistakes WHERE id=?", (r[0],), commit=True); st.rerun()
-    else: st.info("No records yet.")
+            rid, rdate, rsource, rwrong, rcorrect, rexplain = r
+            col_exp, col_del = st.columns([10, 1])
+            with col_exp:
+                with st.expander(f"📅 {rdate[:16]} | {rsource}"):
+                    st.markdown(f"**❌ You:** {rwrong}")
+                    st.markdown(f"**✅ Native:** {rcorrect}")
+                    if rexplain:
+                        st.caption(rexplain)
+            with col_del:
+                st.write("")  # 空行对齐
+                if st.button("🗑️", key=f"del_m_{rid}", help="Delete this record"):
+                    run_query(db_name, "DELETE FROM mistakes WHERE id=?", (rid,), commit=True); st.rerun()
+    else:
+        st.info("No errors recorded yet. Keep chatting!")
+
+with t4:
+    st.subheader("🕰️ History — Chats & Journals")
+
+    # 聊天记录
+    chats = run_query(db_name, "SELECT id, date, scenario, chat_log FROM chat_history ORDER BY id DESC", fetch=True)
+    # 日记记录
+    journals = run_query(db_name, "SELECT id, date, title, content, feedback FROM journal ORDER BY id DESC", fetch=True)
+
+    # 合并并按时间排序
+    all_records = []
+    for c in (chats or []):
+        all_records.append({"type": "chat", "id": c[0], "date": c[1], "data": c})
+    for j in (journals or []):
+        all_records.append({"type": "journal", "id": j[0], "date": j[1], "data": j})
+    all_records.sort(key=lambda x: x["date"], reverse=True)
+
+    if not all_records:
+        st.info("No history yet.")
+    else:
+        st.write(f"**{len(all_records)} records total** — 💬 {len(chats or [])} chats · 📝 {len(journals or [])} journals")
+        for rec in all_records:
+            if rec["type"] == "chat":
+                _, rdate, rscenario, rchat_log = rec["data"]
+                rid = rec["id"]
+                label = f"💬 {rdate[:16]} | {rscenario}"
+                col_exp, col_del = st.columns([10, 1])
+                with col_exp:
+                    with st.expander(label):
+                        try:
+                            msgs = json.loads(rchat_log)
+                            for m in msgs:
+                                role_icon = "🧑" if m["role"] == "user" else "🤖"
+                                if m.get("errors"):
+                                    for e in m["errors"]:
+                                        st.error(f"❌ {e['wrong_sentence']} → ✅ {e['correction']}")
+                                st.markdown(f"{role_icon} {m.get('content', '')}")
+                        except:
+                            st.write(rchat_log)
+                with col_del:
+                    st.write("")
+                    if st.button("🗑️", key=f"del_ch_{rid}"):
+                        run_query(db_name, "DELETE FROM chat_history WHERE id=?", (rid,), commit=True); st.rerun()
+
+            elif rec["type"] == "journal":
+                _, rdate, rtitle, rcontent, rfeedback = rec["data"]
+                rid = rec["id"]
+                fb = json.loads(rfeedback) if rfeedback else {}
+                score_label = f" 🏅{fb.get('score', '?')}/10" if fb else ""
+                label = f"📝 {rdate[:16]} | {rtitle}{score_label}"
+                col_exp, col_del = st.columns([10, 1])
+                with col_exp:
+                    with st.expander(label):
+                        st.markdown(rcontent)
+                        if fb.get("overall"):
+                            st.info(f"💬 {fb['overall']}")
+                        if fb.get("errors"):
+                            for e in fb["errors"]:
+                                st.error(f"❌ `{e.get('original','')}` → ✅ `{e.get('correction','')}`")
+                        if fb.get("rewritten"):
+                            with st.expander("✨ Polished version"):
+                                st.markdown(fb["rewritten"])
+                with col_del:
+                    st.write("")
+                    if st.button("🗑️", key=f"del_j2_{rid}"):
+                        run_query(db_name, "DELETE FROM journal WHERE id=?", (rid,), commit=True); st.rerun()
 
 with t5:
     st.subheader("Achievements")
