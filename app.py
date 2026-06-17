@@ -56,6 +56,7 @@ def init_db(database_file):
         c.execute('CREATE TABLE IF NOT EXISTS mistakes (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, source TEXT, wrong_sentence TEXT, correction TEXT, explanation_en TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS vocab (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, word TEXT, definition_en TEXT, translation_zh TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, scenario TEXT, chat_log TEXT)')
+        c.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT DEFAULT CURRENT_TIMESTAMP, title TEXT, content TEXT, feedback TEXT)')
         c.execute('CREATE TABLE IF NOT EXISTS user_stats (id INTEGER PRIMARY KEY CHECK (id = 1), xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, streak INTEGER DEFAULT 0, last_active TEXT, total_messages INTEGER DEFAULT 0, perfect_messages INTEGER DEFAULT 0, total_sessions INTEGER DEFAULT 0)')
         c.execute('CREATE TABLE IF NOT EXISTS achievements (id TEXT PRIMARY KEY, name TEXT, description TEXT, icon TEXT, tier TEXT, unlocked INTEGER DEFAULT 0, unlock_date TEXT)')
         c.execute("INSERT OR IGNORE INTO user_stats (id, xp, level, streak, total_messages, perfect_messages, total_sessions) VALUES (1, 0, 1, 0, 0, 0, 0)")
@@ -176,6 +177,22 @@ def chat_and_correct_agent(user_text, scenario, history=None, personality="😎 
         return json.loads(resp.choices[0].message.content)
     except: return {"ai_reply": "Connection error.", "errors": []}
 
+def grade_journal(title, content):
+    prompt = """You are a strict but encouraging English writing coach. The student wrote a journal entry.
+1. Give overall feedback (2-3 sentences)
+2. List specific grammar/vocabulary/expression errors with corrections
+3. Give a score out of 10
+Output JSON ONLY: {"overall": "...", "errors": [{"original": "...", "correction": "...", "explanation": "..."}], "score": 8, "rewritten": "A polished version of their entry"}"""
+    try:
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": f"Title: {title}\n\n{content}"}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(resp.choices[0].message.content)
+    except:
+        return {"overall": "Connection error.", "errors": [], "score": 0, "rewritten": ""}
+
 def get_word_definition(word):
     prompt = "You are a dictionary. Define the word/phrase, give example, and provide Chinese translation. Output JSON: {\"definition_en\": \"...\", \"example_en\": \"...\", \"translation_zh\": \"...\"}"
     try:
@@ -226,6 +243,64 @@ with t1:
             for e in errs:
                 run_query(db_name, "INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)", ("Chat: " + current_scenario, e['wrong_sentence'], e['correction'], e['explanation_en']), commit=True)
             st.rerun()
+
+with t2:
+    st.subheader("📝 English Journal")
+    st.caption("Write freely in English — AI will grade your grammar, vocabulary, and style.")
+
+    with st.form("journal_form", clear_on_submit=True):
+        j_title = st.text_input("Title (optional):", placeholder="e.g. My weekend, A funny thing happened...")
+        j_content = st.text_area("Write your journal entry here:", height=200, placeholder="Today I went to the park and...")
+        submitted = st.form_submit_button("✅ Submit for Grading")
+
+    if submitted and j_content.strip():
+        with st.spinner("AI is reading your entry..."):
+            feedback = grade_journal(j_title or "Untitled", j_content)
+        score = feedback.get("score", 0)
+        overall = feedback.get("overall", "")
+        errors = feedback.get("errors", [])
+        rewritten = feedback.get("rewritten", "")
+
+        # Score display
+        score_color = "#2ecc71" if score >= 8 else "#f39c12" if score >= 5 else "#e74c3c"
+        st.markdown(f"<h2 style='color:{score_color}'>Score: {score}/10</h2>", unsafe_allow_html=True)
+        st.info(f"💬 {overall}")
+
+        if errors:
+            st.markdown("**✏️ Errors to fix:**")
+            for i, e in enumerate(errors, 1):
+                st.error(f"**{i}.** ❌ `{e.get('original', '')}` → ✅ `{e.get('correction', '')}`\n\n_{e.get('explanation', '')}_")
+                run_query(db_name, "INSERT INTO mistakes (source, wrong_sentence, correction, explanation_en) VALUES (?, ?, ?, ?)",
+                          ("Journal: " + (j_title or "Untitled"), e.get('original', ''), e.get('correction', ''), e.get('explanation', '')), commit=True)
+        else:
+            st.success("🎉 No errors found! Perfect entry!")
+
+        if rewritten:
+            with st.expander("✨ See polished version"):
+                st.markdown(rewritten)
+
+        # Save to DB and add XP
+        is_perfect = len(errors) == 0
+        run_query(db_name, "INSERT INTO journal (title, content, feedback) VALUES (?, ?, ?)",
+                  (j_title or "Untitled", j_content, json.dumps(feedback)), commit=True)
+        add_xp(25 if is_perfect else 15, perfect=is_perfect)
+        st.toast("Entry saved! XP earned 🎉")
+
+    st.divider()
+    st.markdown("**📚 Past Entries:**")
+    past = run_query(db_name, "SELECT id, date, title, content, feedback FROM journal ORDER BY id DESC LIMIT 20", fetch=True)
+    if past:
+        for pid, pdate, ptitle, pcontent, pfeedback in past:
+            fb = json.loads(pfeedback) if pfeedback else {}
+            score_label = f"🏅 {fb.get('score', '?')}/10" if fb else ""
+            with st.expander(f"📅 {pdate[:10]} | {ptitle} {score_label}"):
+                st.markdown(pcontent)
+                if fb.get("overall"):
+                    st.info(fb["overall"])
+                if st.button("🗑️ Delete", key=f"del_j_{pid}"):
+                    run_query(db_name, "DELETE FROM journal WHERE id=?", (pid,), commit=True); st.rerun()
+    else:
+        st.info("No journal entries yet. Write your first one above!")
 
 with t3:
     st.subheader("Knowledge Base")
