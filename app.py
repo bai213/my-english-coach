@@ -6,13 +6,11 @@ st.set_page_config(page_title="Hardcore English Coach", layout="wide")
 import sqlite3
 import json
 import os
-import uuid  # 用于生成稳定的会话 ID
 from datetime import datetime
 from openai import OpenAI
 
-# ================= 1. 数据库工具函数（解决并发锁定 & 线程安全）=================
+# ================= 1. 数据库工具函数 =================
 def run_query(db_file, query, params=(), fetch=False, commit=False):
-    """通用的数据库执行函数，确保每次操作都独立开关连接，防止 database is locked"""
     with sqlite3.connect(db_file, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute(query, params)
@@ -22,65 +20,7 @@ def run_query(db_file, query, params=(), fetch=False, commit=False):
             return c.fetchall()
         return None
 
-# ================= 2. 日志与访客系统（使用 UUID 修复报错）=================
-def init_visit_log():
-    run_query('visit_log.db', '''
-    CREATE TABLE IF NOT EXISTS visit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        login_time TEXT, user_type TEXT, ip TEXT
-    )''', commit=True)
-
-init_visit_log()
-
-def log_visit(user_type):
-    try:
-        if "user_uuid" not in st.session_state:
-            st.session_state.user_uuid = str(uuid.uuid4())[:8]
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        session_id = st.session_state.user_uuid
-        run_query('visit_log.db', "INSERT INTO visit_log (login_time, user_type, ip) VALUES (?, ?, ?)",
-                  (now, user_type, session_id), commit=True)
-    except:
-        pass
-
-def show_visit_log():
-    st.subheader("👀 访客登录记录（仅管理员可见）")
-    logs = run_query('visit_log.db', "SELECT login_time, user_type, ip FROM visit_log ORDER BY id DESC LIMIT 50", fetch=True)
-    if logs:
-        for t, ut, ip in logs:
-            st.markdown(f"**{t}** | {ut} | 会话：{ip[:12]}...")
-    else:
-        st.info("暂无访客记录")
-
-# ================= 3. 验证系统（iPad 中文输入优化）=================
-with st.sidebar:
-    st.header("🔒 专属验证")
-    show_pwd = st.checkbox("显示暗号（输入中文请勾选）", help="iPad用户请勾选此项以唤出中文输入法")
-    pwd_type = "default" if show_pwd else "password"
-    pwd = st.text_input("🔑 请输入暗号：", type=pwd_type)
-
-# 从 Streamlit Secrets 安全读取密码
-ADMIN_PWD = st.secrets["ADMIN_PWD"]
-GUEST_PWD = st.secrets["GUEST_PWD"]
-
-if pwd == ADMIN_PWD:
-    db_name = "notebook.db"
-    log_visit("ADMIN")
-    st.sidebar.success("👑 欢迎回来，主人！")
-elif pwd == GUEST_PWD:
-    db_name = "guest.db"
-    log_visit("GUEST")
-    st.sidebar.info("👋 欢迎体验！")
-elif pwd != "":
-    st.sidebar.warning("✋ 停！暗号不对。")
-    st.stop()
-else:
-    st.title("🔒 零容忍英语训练营 (已锁定)")
-    st.info("👈 请在左侧侧边栏输入暗号以解锁内容。")
-    st.markdown("<style>header, footer, .stAppToolbar {display:none !important;}</style>", unsafe_allow_html=True)
-    st.stop()
-
-# ================= 4. 注入 CSS（强力隐藏所有官方 UI 元素）=================
+# ================= 2. 注入 CSS =================
 st.markdown("""
 <style>
     header[data-testid="stHeader"] { display: none !important; }
@@ -107,7 +47,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 5. 数据库初始化 =================
+# ================= 3. 数据库初始化 =================
+db_name = "notebook.db"
+
 def init_db(database_file):
     with sqlite3.connect(database_file) as conn:
         c = conn.cursor()
@@ -140,7 +82,7 @@ def init_db(database_file):
 
 init_db(db_name)
 
-# ================= 6. 游戏化逻辑 =================
+# ================= 4. 游戏化逻辑 =================
 def get_stats():
     res = run_query(db_name, "SELECT xp, level, streak, last_active, total_messages, perfect_messages, total_sessions FROM user_stats WHERE id = 1", fetch=True)
     row = res[0]
@@ -212,7 +154,7 @@ def render_stats_bar():
     st.markdown(f'<div class="xp-bar-bg"><div class="xp-bar-fill" style="width: {pct}%;"></div><div class="xp-bar-text">{stats["xp"]} / {xp_needed} XP</div></div>', unsafe_allow_html=True)
     st.write("")
 
-# ================= 7. AI & 查词逻辑（修复了查词消失问题）=================
+# ================= 5. AI & 查词逻辑 =================
 api_key = st.secrets["DEEPSEEK_API_KEY"]
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
@@ -241,10 +183,8 @@ def get_word_definition(word):
         return json.loads(resp.choices[0].message.content)
     except: return {"definition_en": "Error", "example_en": "", "translation_zh": "查询失败"}
 
-# ================= 8. 主界面 Tab 渲染 =================
+# ================= 6. 主界面 Tab 渲染 =================
 render_stats_bar()
-if pwd == ADMIN_PWD: show_visit_log(); st.divider()
-
 st.title("🔥 Zero Tolerance English Bootcamp")
 t1, t2, t3, t4, t5 = st.tabs(["🗣️ Roleplay", "📝 Journal", "📖 Notebook", "🕰️ History", "🏆 Achievements"])
 
@@ -307,9 +247,9 @@ with t5:
         html += f"<span class='badge {t_cls}' title='{desc}'>{icon} {name}</span> "
     st.markdown(html, unsafe_allow_html=True)
 
-# --- Sidebar Vocab（修复了 AI 查词失效问题） ---
+# --- Sidebar Vocab ---
 with st.sidebar:
-    st.divider(); st.subheader("Vocab Book")
+    st.subheader("Vocab Book")
     nw = st.text_input("Quick search:")
     if st.button("Search & Save"):
         if nw:
@@ -321,7 +261,7 @@ with st.sidebar:
                 if ex: st.info(f"Example: {ex}")
                 run_query(db_name, "INSERT INTO vocab (word, definition_en, translation_zh) VALUES (?, ?, ?)", (nw, f"{df}\n\nEx: {ex}", tr), commit=True)
                 st.success("Saved!")
-    
+
     st.divider(); st.write("Recent Words:")
     words = run_query(db_name, "SELECT id, word, definition_en, translation_zh FROM vocab ORDER BY id DESC LIMIT 10", fetch=True)
     if words:
